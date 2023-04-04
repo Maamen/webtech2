@@ -1,0 +1,226 @@
+import firebase_admin
+from firebase_admin import firestore
+from firebase_admin import credentials, db
+import flask
+from flask import jsonify, request, json
+
+app = flask(__name__)
+
+# Use a service account
+cred = credentials.Certificate("path/to/serviceAccountKey.json")
+firebase_admin.initialize_app(cred, {
+    'databaseURL': 'https://your-project-id.firebaseio.com/'
+})
+
+# Get a reference to the Firestore database
+db = firestore.client()
+voters_ref = db.collection("voters")
+elections_ref = db.collection("elections")
+
+# Registering a student as a voter
+@app.route('/register', methods=['POST'])
+def register_student():
+    # Parse the request body
+    data = request.json
+    name = data.get('name')
+    email = data.get('email')
+    student_id = data.get('student_id')
+    year_group = data.get('year_group')
+
+    # Validating the request body
+    if not name or not student_id or not email or not course or not year_group:
+        return jsonify({'error': 'Missing fields'}), 400
+
+    # Checking if there is duplicate entry
+    voters_ref = db.collection('voters')
+    query = voters_ref.where('student_id', '==', student_id).get()
+    if query:
+        return jsonify({'error': 'This Student Has Already Been Registered!'}), 400
+
+    # Add the voter to the database
+    voter_data = {
+        'name': name,
+        'email': email,
+        'student_id': student_id,
+        'year_group': year_group
+    }
+    voters_ref.add(voter_data)
+
+    # Return success response
+    return jsonify({'message': 'Student registered successfully'}), 200
+
+### De-registering a student
+@app.route('/deregister', methods=['DELETE'])
+def deregister_student():
+    data = json.loads(request.data)
+    student_id = data.get('student_id')
+
+    ref = db.reference('voters')
+    voters = ref.get()
+    new_voters = []
+    for voter_id, voter in voters.items():
+        if voter['student_id'] == student_id:
+            continue
+        new_voters.append((voter_id, voter))
+    for voter_id, voter in new_voters:
+        ref.child(voter_id).set(voter)
+    return jsonify({'message': 'Student record deleted successfully.'})
+
+
+# Updating a registered voter's information
+@app.route('/update_student/<int:student_id>', methods=['PUT'])
+def update_student(student_id):
+    # Parse the request body
+    data = json.loads(request.data)
+    name = data.get('name')
+    email = data.get('email')
+    year_group = data.get('year_group')
+
+    # Get the student's record from Firebase
+    student_ref = db.collection('voters').document(str(student_id))
+    student = student_ref.get()
+
+    if student.exists:
+        # Update the record with the new data
+        student_ref.update({
+            'name': name,
+            'email': email,
+            'year_group': year_group
+        })
+
+        # Return success response
+        return jsonify({'message': 'Student updated successfully'}), 200
+    else:
+        return jsonify({'error': 'Student not found'}), 404
+
+#
+# Retrieving a registered voter by ID
+@app.route('/voter/<student_id>', methods=['GET'])
+def get_voter(student_id):
+    # Find the student by ID
+    ref = db.reference('voters')
+    registered_students = ref.get()
+
+    for student in registered_students.values():
+        if student['student_id'] == student_id:
+            # Return the voter information
+            return jsonify(student), 200
+
+    # If voter is not found, return error response
+    return jsonify({'error': 'Voter not found'}), 404
+
+# Create an election
+@app.route('/election', methods=['POST'])
+def create_election():
+    # Parse the request body
+    data = json.loads(request.data)
+    candidates = data.get('candidates')
+    election_id = data.get('election_id')
+    candidate_id = data.get('candidate_id')
+
+    # Validate the request body
+    if not election_id or not candidates or not candidate_id:
+        return jsonify({'error': 'Missing fields'}), 400
+
+    # Check if the election already exists in the database
+    election_ref = db.collection('elections').document(election_id)
+    if election_ref.get().exists:
+        return jsonify({'error': 'Election already exists'}), 400
+
+    # Add the election to the database
+    new_election = {
+        'candidates': candidates,
+        'election_id': election_id
+        
+    }
+
+    election_ref.set(new_election)
+
+    # Return success response
+    return jsonify({'message': 'Election created'}), 200
+
+
+#
+# Retrieving an Election
+def get_election(election_id):
+    # Query the database for the election with the given ID
+    doc_ref = db.collection('elections').document(str(election_id))
+    doc = doc_ref.get()
+
+    if doc.exists:
+        # If the election exists, return its data
+        data = doc.to_dict()
+        return jsonify({'candidates': data['candidates'], 'election_id': data['election_id']}), 200
+    else:
+        # If no matching election is found, return an error response
+        return jsonify({'error': 'Election not found'}), 404
+
+#
+# # Deleting an Election
+@app.route('/election/<election_id>', methods=['DELETE'])
+def delete_election(election_id):
+    # Reference to the 'elections' collection in Firebase
+    elections_ref = db.collection('elections')
+
+    # Query the 'elections' collection for the election with the given ID
+    query = elections_ref.where('election_id', '==', election_id).get()
+
+    # If no matching election is found, return an error response
+    if len(query) == 0:
+        return jsonify({'error': 'Election not found'}), 404
+
+    # Delete the election document from the 'elections' collection
+    for doc in query:
+        doc.reference.delete()
+
+    # Return success response
+    return jsonify({'message': 'Election deleted'}), 200
+
+# # Voting in an Election
+@app.route('/vote/cast_vote', methods=['PATCH'])
+def vote():
+    # Parse the request body
+    data = json.loads(request.data)
+    election_id = data.get('election_id')
+    student_id = data.get('student_id')
+    candidate_id = data.get('candidate_id')
+
+    # Validate the request body
+    if not election_id or not student_id or not candidate_id:
+        return jsonify({'error': 'Missing fields'}), 400
+
+    # Find the election by ID
+    election_ref = db.collection('elections').document(election_id)
+    election_doc = election_ref.get()
+
+    if not election_doc.exists:
+        return jsonify({'error': 'Election not found'}), 404
+
+    election_data = election_doc.to_dict()
+
+    # Check if the student has already voted
+    if student_id in election_data.get('voters', []):
+        return jsonify({'error': 'You have already voted in this election'}), 403
+
+    # Update the vote count for the candidate
+    candidate_ref = election_ref.collection('candidates').document(str(candidate_id))
+    candidate_doc = candidate_ref.get()
+
+    if candidate_doc.exists:
+        candidate_data = candidate_doc.to_dict()
+        candidate_ref.update({'votes': candidate_data['votes'] + 1})
+        election_ref.update({'voters': firestore.ArrayUnion([student_id])})
+
+        # Return success response
+        return jsonify({'message': 'Vote successfully casted'}), 200
+    else:
+        return jsonify({'error': 'Invalid candidate ID'}), 400
+
+
+#
+# Run the app
+if __name__ == '__main__':
+    app.run(debug=True)
+#
+#
+#
